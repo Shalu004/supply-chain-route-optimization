@@ -116,10 +116,10 @@ def run_optimization(
 
     return OptimizationResult(
         routes=routes,
-        total_distance_km=round(total_distance, 3),
-        total_cost=round(total_cost, 2),
-        vehicles_used=vehicles_used,
-        baseline_distance_km=round(baseline_distance, 3),
-        baseline_cost=round(baseline_cost, 2),
-        cost_reduction_pct=reduction_pct,
+        total_distance_km=float(round(total_distance, 3)),
+        total_cost=float(round(total_cost, 2)),
+        vehicles_used=int(vehicles_used),
+        baseline_distance_km=float(round(baseline_distance, 3)),
+        baseline_cost=float(round(baseline_cost, 2)),
+        cost_reduction_pct=float(reduction_pct),
     )

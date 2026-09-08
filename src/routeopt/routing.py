@@ -115,7 +115,7 @@ def solve_route(zone_id: int, stops: list[Stop], depot: Stop | None = None) -> R
     if len(ordered_stops) < 3:
         dist = _haversine_matrix(ordered_stops)
         total = _route_length(list(range(len(ordered_stops))), dist)
-        return Route(zone_id=zone_id, stops=ordered_stops, total_distance_km=round(total, 3))
+        return Route(zone_id=zone_id, stops=ordered_stops, total_distance_km=float(round(total, 3)))
 
     dist = _haversine_matrix(ordered_stops)
     order = _nearest_neighbor_order(dist)
@@ -124,7 +124,7 @@ def solve_route(zone_id: int, stops: list[Stop], depot: Stop | None = None) -> R
     final_stops = [ordered_stops[i] for i in order]
     total = _route_length(order, dist)
 
-    return Route(zone_id=zone_id, stops=final_stops, total_distance_km=round(total, 3))
+    return Route(zone_id=zone_id, stops=final_stops, total_distance_km=float(round(total, 3)))
 
 
 def solve_all_zones(zones: dict[int, list[Stop]], depot: Stop | None = None) -> list[Route]:
