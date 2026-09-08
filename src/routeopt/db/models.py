@@ -27,6 +27,7 @@ class Company(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     slug = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
+    hashed_password = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     stops = relationship("Stop", back_populates="company")
