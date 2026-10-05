@@ -7,3 +7,9 @@ venv/
 .env
 .DS_Store
 data/sample_stops.json
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+scratch/

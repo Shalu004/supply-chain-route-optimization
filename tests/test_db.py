@@ -1,16 +1,17 @@
-"""
-Integration tests for PostgreSQL database layer, SQLAlchemy models, and multitenancy.
+﻿"""
+Integration tests for PostgreSQL database layer, SQLAlchemy models, and multitenancy (including RLS).
 """
 
 import sys
 import unittest
 import uuid
 from pathlib import Path
+from sqlalchemy.exc import DBAPIError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from routeopt.clustering import Stop as ClusterStop
-from routeopt.db.models import Company, Stop, OptimizationRun, RouteRecord
+from routeopt.db.models import Company, Stop, OptimizationRun, RouteRecord, Vehicle
 from routeopt.db.session import admin_session, scoped_session_for_company
 from routeopt.pipeline import run_optimization
 
@@ -23,6 +24,7 @@ class TestDatabaseIntegration(unittest.TestCase):
             session.query(RouteRecord).delete()
             session.query(OptimizationRun).delete()
             session.query(Stop).delete()
+            session.query(Vehicle).delete()
             session.query(Company).delete()
 
     def test_company_creation(self):
@@ -71,6 +73,49 @@ class TestDatabaseIntegration(unittest.TestCase):
             self.assertEqual(len(stops_b), 1)
             self.assertEqual({s.external_id for s in stops_a}, {"A1", "A2"})
             self.assertEqual({s.external_id for s in stops_b}, {"B1"})
+
+    def test_rls_query_isolation(self):
+        """Test that PostgreSQL RLS restricts unscoped SELECT queries to the active tenant session."""
+        slug_a = f"rls-a-{uuid.uuid4().hex[:6]}"
+        slug_b = f"rls-b-{uuid.uuid4().hex[:6]}"
+
+        with admin_session() as session:
+            comp_a = Company(name="RLS Comp A", slug=slug_a)
+            comp_b = Company(name="RLS Comp B", slug=slug_b)
+            session.add_all([comp_a, comp_b])
+            session.flush()
+            id_a, id_b = comp_a.id, comp_b.id
+
+        # Add stops under Tenant A scoped session
+        with scoped_session_for_company(str(id_a)) as session:
+            stop_a = Stop(company_id=id_a, external_id="RLS_A", lat=28.5, lon=77.1, demand=1.0)
+            session.add(stop_a)
+
+        # Query stops under Tenant B scoped session without explicit company_id filter
+        with scoped_session_for_company(str(id_b)) as session:
+            # Unscoped query - RLS should filter out Tenant A's stops at the database level
+            all_stops_b = session.query(Stop).all()
+            # If RLS is enforced, Comp B sees 0 stops despite Comp A having 1 stop in DB
+            self.assertEqual(len(all_stops_b), 0)
+
+    def test_rls_insert_prevention(self):
+        """Test that PostgreSQL RLS WITH CHECK policy prevents inserting rows for another tenant."""
+        slug_a = f"rls-ins-a-{uuid.uuid4().hex[:6]}"
+        slug_b = f"rls-ins-b-{uuid.uuid4().hex[:6]}"
+
+        with admin_session() as session:
+            comp_a = Company(name="RLS Ins A", slug=slug_a)
+            comp_b = Company(name="RLS Ins B", slug=slug_b)
+            session.add_all([comp_a, comp_b])
+            session.flush()
+            id_a, id_b = comp_a.id, comp_b.id
+
+        # Attempt to insert a stop for Tenant A while session is scoped to Tenant B
+        with self.assertRaises(DBAPIError):
+            with scoped_session_for_company(str(id_b)) as session:
+                illegal_stop = Stop(company_id=id_a, external_id="ILLEGAL", lat=28.5, lon=77.1, demand=1.0)
+                session.add(illegal_stop)
+                session.flush()
 
     def test_pipeline_db_persistence(self):
         """Test running optimization engine and storing results in database."""

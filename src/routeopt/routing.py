@@ -1,19 +1,6 @@
-"""
+﻿"""
 Route sequencing: given a zone's stops, decide the visiting order that
 minimizes total travel distance (a per-zone Traveling Salesman Problem).
-
-Production note
-----------------
-This module implements a nearest-neighbor + 2-opt heuristic using only
-numpy/scipy, because Google OR-Tools isn't available in this environment.
-OR-Tools' `RoutingModel` is the industry-standard choice for real
-deployments -- it natively supports multi-vehicle capacity constraints,
-time windows, and pickup/delivery pairing, and scales better on large
-instances. Swapping this module for an OR-Tools-backed implementation
-is a drop-in replacement: keep the same `solve_route(stops) -> Route`
-interface and nothing upstream (clustering, API, dashboard) needs to
-change. See `routing_ortools.py.stub` for the intended production
-signature.
 """
 
 from __future__ import annotations
@@ -24,6 +11,7 @@ from itertools import combinations
 import numpy as np
 
 from .clustering import Stop
+from .distance import AbstractDistanceProvider, HaversineDistanceProvider
 
 
 @dataclass
@@ -40,18 +28,7 @@ EARTH_RADIUS_KM = 6371.0
 
 def _haversine_matrix(stops: list[Stop]) -> np.ndarray:
     """Pairwise great-circle distance matrix (km) between stops."""
-    lat = np.radians(np.array([s.lat for s in stops]))
-    lon = np.radians(np.array([s.lon for s in stops]))
-
-    dlat = lat[:, None] - lat[None, :]
-    dlon = lon[:, None] - lon[None, :]
-
-    a = (
-        np.sin(dlat / 2.0) ** 2
-        + np.cos(lat[:, None]) * np.cos(lat[None, :]) * np.sin(dlon / 2.0) ** 2
-    )
-    c = 2 * np.arcsin(np.clip(np.sqrt(a), -1, 1))
-    return EARTH_RADIUS_KM * c
+    return HaversineDistanceProvider().get_distance_matrix(stops)
 
 
 def _nearest_neighbor_order(dist: np.ndarray) -> list[int]:
@@ -93,16 +70,20 @@ def _two_opt(order: list[int], dist: np.ndarray, max_iterations: int = 200) -> l
     return best
 
 
-def solve_route(zone_id: int, stops: list[Stop], depot: Stop | None = None) -> Route:
+def solve_route(
+    zone_id: int,
+    stops: list[Stop],
+    depot: Stop | None = None,
+    distance_provider: AbstractDistanceProvider | None = None,
+) -> Route:
     """
     Compute the shortest visiting order for a single zone's stops.
 
     Args:
         zone_id: identifier of the zone this route belongs to.
         stops: stops to visit, in any order.
-        depot: optional fixed start/end point (e.g. the warehouse). If
-            given, it is prepended to the sequence and the route returns
-            to it.
+        depot: optional fixed start/end point (e.g. warehouse).
+        distance_provider: distance matrix provider (defaults to Haversine).
 
     Returns:
         A Route with stops in optimized order and total distance in km.
@@ -110,14 +91,15 @@ def solve_route(zone_id: int, stops: list[Stop], depot: Stop | None = None) -> R
     if not stops:
         return Route(zone_id=zone_id, stops=[], total_distance_km=0.0)
 
+    provider = distance_provider or HaversineDistanceProvider()
     ordered_stops = [depot] + stops if depot else list(stops)
 
     if len(ordered_stops) < 3:
-        dist = _haversine_matrix(ordered_stops)
+        dist = provider.get_distance_matrix(ordered_stops)
         total = _route_length(list(range(len(ordered_stops))), dist)
         return Route(zone_id=zone_id, stops=ordered_stops, total_distance_km=float(round(total, 3)))
 
-    dist = _haversine_matrix(ordered_stops)
+    dist = provider.get_distance_matrix(ordered_stops)
     order = _nearest_neighbor_order(dist)
     order = _two_opt(order, dist)
 
@@ -127,6 +109,10 @@ def solve_route(zone_id: int, stops: list[Stop], depot: Stop | None = None) -> R
     return Route(zone_id=zone_id, stops=final_stops, total_distance_km=float(round(total, 3)))
 
 
-def solve_all_zones(zones: dict[int, list[Stop]], depot: Stop | None = None) -> list[Route]:
-    """Solve routing independently for every zone. Trivially parallelizable."""
-    return [solve_route(zid, stops, depot) for zid, stops in zones.items()]
+def solve_all_zones(
+    zones: dict[int, list[Stop]],
+    depot: Stop | None = None,
+    distance_provider: AbstractDistanceProvider | None = None,
+) -> list[Route]:
+    """Solve routing independently for every zone using specified distance provider."""
+    return [solve_route(zid, stops, depot, distance_provider=distance_provider) for zid, stops in zones.items()]

@@ -1,18 +1,20 @@
-"""
-Top-level orchestration: raw stops -> clustered zones -> optimized routes
+﻿"""
+Top-level orchestration: raw stops -> clustered zones / OR-Tools VRP -> optimized routes
 -> cost comparison against a naive baseline.
 
-This is the module the API layer calls. Nothing here should import
-Flask/FastAPI -- keeping the engine framework-agnostic is what makes it
-portable to a job queue (Celery/RQ) later without rewriting it.
+This is the module the API layer calls. Framework-agnostic and portable.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
-from .clustering import Stop, balance_zones_by_capacity, cluster_stops
+from .clustering import Stop, VehicleSpec, balance_zones_by_capacity, cluster_stops
+from .distance import AbstractDistanceProvider, get_distance_provider
 from .routing import Route, solve_all_zones
+
+logger = logging.getLogger("routeopt.pipeline")
 
 
 @dataclass
@@ -32,26 +34,28 @@ class OptimizationResult:
     baseline_distance_km: float
     baseline_cost: float
     cost_reduction_pct: float
+    solver_used: str = "heuristic"
+    distance_provider_used: str = "haversine"
 
 
 def _baseline(
-    stops: list[Stop], n_vehicles: int, depot: Stop | None
+    stops: list[Stop],
+    n_vehicles: int,
+    depot: Stop | None,
+    distance_provider: AbstractDistanceProvider | None = None,
 ) -> tuple[float, int]:
     """
     Naive baseline: the SAME fleet size as the optimized run, but stops are
     split into contiguous chunks in as-received order (no clustering) and
-    visited in that order with no route optimization (no 2-opt).
-
-    Using the same vehicle count is essential for an honest comparison --
-    if the baseline used fewer vehicles, its lower fixed dispatch cost
-    could mask genuinely worse routing, and the "% cost reduction" figure
-    would be measuring fleet size instead of routing quality.
+    visited in that order with no route optimization.
 
     Returns:
         (total_distance_km, vehicles_used) for the naive baseline.
     """
-    from .routing import _haversine_matrix, _route_length
+    from .distance import HaversineDistanceProvider
+    from .routing import _route_length
 
+    provider = distance_provider or HaversineDistanceProvider()
     n_chunks = min(n_vehicles, len(stops))
     chunk_size = -(-len(stops) // n_chunks)  # ceil division
 
@@ -66,7 +70,7 @@ def _baseline(
         pts = [depot] + chunk if depot else chunk
         if len(pts) < 2:
             continue
-        dist = _haversine_matrix(pts)
+        dist = provider.get_distance_matrix(pts)
         total_distance += _route_length(list(range(len(pts))), dist)
 
     return total_distance, vehicles_used
@@ -78,33 +82,67 @@ def run_optimization(
     vehicle_capacity: float,
     depot: Stop | None = None,
     cost_model: CostModel | None = None,
+    solver_type: str = "ortools",
+    distance_provider: str = "haversine",
+    vehicle_specs: list[VehicleSpec] | None = None,
+    max_route_distance_km: float | None = None,
 ) -> OptimizationResult:
     """
-    Full pipeline: cluster stops into `n_vehicles` zones, optimize each
-    zone's route, and compare total cost against a naive single-route
-    baseline.
+    Full optimization pipeline.
 
-    Args:
-        stops: all delivery stops for this run.
-        n_vehicles: number of vehicles / zones to split stops into.
-        vehicle_capacity: max demand (packages/weight) per vehicle.
-        depot: optional shared start/end point for every route.
-        cost_model: cost coefficients; defaults to CostModel().
-
-    Returns:
-        OptimizationResult with routes, costs, and % improvement over baseline.
+    Supports Google OR-Tools VRP solver ("ortools") and fallback K-Means + 2-Opt ("heuristic"),
+    heterogeneous vehicle fleet specs, max route distance limits, and pluggable distance matrix providers.
     """
     cost_model = cost_model or CostModel()
+    dist_provider_obj = get_distance_provider(distance_provider)
+    routes: list[Route] = []
 
-    zones = cluster_stops(stops, n_zones=n_vehicles)
-    zones = balance_zones_by_capacity(zones, vehicle_capacity)
-    routes = solve_all_zones(zones, depot=depot)
+    if solver_type not in ("ortools", "heuristic"):
+        logger.warning(
+            "Unknown solver_type '%s'; defaulting to 'heuristic'.", solver_type
+        )
+        actual_solver = "heuristic"
+    else:
+        actual_solver = solver_type
+
+    effective_n_vehicles = len(vehicle_specs) if vehicle_specs else n_vehicles
+
+    if actual_solver == "ortools":
+        try:
+            from .ortools_routing import solve_ortools_vrp
+
+            routes = solve_ortools_vrp(
+                stops=stops,
+                n_vehicles=effective_n_vehicles,
+                vehicle_capacity=vehicle_capacity,
+                depot=depot,
+                distance_provider=dist_provider_obj,
+                vehicle_specs=vehicle_specs,
+                max_route_distance_km=max_route_distance_km,
+            )
+            actual_solver = "ortools"
+        except Exception as e:
+            logger.warning(
+                "OR-Tools solver failed or infeasible (%s); falling back to heuristic solver.",
+                e,
+            )
+            actual_solver = "heuristic (fallback)"
+            routes = []
+
+    if not routes or actual_solver.startswith("heuristic"):
+        zones = cluster_stops(stops, n_zones=effective_n_vehicles)
+        zones = balance_zones_by_capacity(zones, vehicle_capacity)
+        routes = solve_all_zones(zones, depot=depot, distance_provider=dist_provider_obj)
+        if actual_solver == "ortools":
+            actual_solver = "heuristic"
 
     total_distance = sum(r.total_distance_km for r in routes)
     vehicles_used = sum(1 for r in routes if r.stops)
     total_cost = total_distance * cost_model.cost_per_km + vehicles_used * cost_model.cost_per_vehicle
 
-    baseline_distance, baseline_vehicles = _baseline(stops, n_vehicles, depot)
+    baseline_distance, baseline_vehicles = _baseline(
+        stops, effective_n_vehicles, depot, distance_provider=dist_provider_obj
+    )
     baseline_cost = (
         baseline_distance * cost_model.cost_per_km
         + baseline_vehicles * cost_model.cost_per_vehicle
@@ -122,4 +160,6 @@ def run_optimization(
         baseline_distance_km=float(round(baseline_distance, 3)),
         baseline_cost=float(round(baseline_cost, 2)),
         cost_reduction_pct=float(reduction_pct),
+        solver_used=actual_solver,
+        distance_provider_used=distance_provider.lower().strip(),
     )

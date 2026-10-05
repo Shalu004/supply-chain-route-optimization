@@ -1,21 +1,10 @@
-"""
-FastAPI service -- production API layer for RouteOpt.
-
-Auth model: a company registers with a slug + password, logs in to get a
-JWT, and every subsequent request must carry that JWT. company_id is
-extracted from the verified token -- never trusted from the request body.
-This closes the gap in the old Flask API where anyone could claim to be
-any company by just typing a different company_id in the JSON payload.
+﻿"""
+FastAPI application for RouteOpt API service.
 """
 
-from __future__ import annotations
-
-import sys
+import logging
 import time
 import uuid
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -28,8 +17,8 @@ from slowapi.util import get_remote_address
 from starlette.requests import Request
 
 from routeopt.auth import create_access_token, decode_access_token, hash_password, verify_password
-from routeopt.clustering import Stop
-from routeopt.db.models import Company, OptimizationRun, RouteRecord
+from routeopt.clustering import Stop, VehicleSpec
+from routeopt.db.models import Company, OptimizationRun, RouteRecord, Vehicle
 from routeopt.db.session import admin_session, scoped_session_for_company
 from routeopt.pipeline import CostModel, run_optimization
 
@@ -67,6 +56,23 @@ class DepotIn(BaseModel):
     lon: float
 
 
+class VehicleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    vehicle_type: str = "van"
+    capacity: float = Field(20.0, gt=0)
+    cost_per_km: float = Field(0.9, ge=0)
+    fixed_cost: float = Field(50.0, ge=0)
+
+
+class VehicleSpecIn(BaseModel):
+    id: str
+    name: str = "Vehicle"
+    capacity: float = Field(20.0, gt=0)
+    cost_per_km: float = Field(0.9, ge=0)
+    fixed_cost: float = Field(50.0, ge=0)
+    max_distance_km: float | None = Field(None, gt=0)
+
+
 class OptimizeRequest(BaseModel):
     vehicles: int = Field(..., ge=1)
     vehicle_capacity: float = Field(..., gt=0)
@@ -74,6 +80,10 @@ class OptimizeRequest(BaseModel):
     depot: DepotIn | None = None
     cost_per_km: float | None = None
     cost_per_vehicle: float | None = None
+    solver_type: str = Field("ortools", description="Solver engine: 'ortools' or 'heuristic'")
+    distance_provider: str = Field("haversine", description="Distance provider: 'haversine' or 'osrm'")
+    vehicle_specs: list[VehicleSpecIn] | None = None
+    max_route_distance_km: float | None = Field(None, gt=0)
 
 
 # ---------- Auth dependency ----------
@@ -139,6 +149,57 @@ def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     return {"access_token": token, "token_type": "bearer"}
 
 
+@app.post("/vehicles", status_code=201)
+def create_vehicle(
+    body: VehicleCreate,
+    current_company: dict = Depends(get_current_company),
+):
+    company_id = current_company["company_id"]
+    with scoped_session_for_company(company_id) as session:
+        vehicle = Vehicle(
+            company_id=company_id,
+            name=body.name,
+            vehicle_type=body.vehicle_type,
+            capacity=body.capacity,
+            cost_per_km=body.cost_per_km,
+            fixed_cost=body.fixed_cost,
+            is_active=True,
+        )
+        session.add(vehicle)
+        session.flush()
+        vehicle_id = str(vehicle.id)
+
+    return {
+        "vehicle_id": vehicle_id,
+        "name": body.name,
+        "vehicle_type": body.vehicle_type,
+        "capacity": body.capacity,
+        "cost_per_km": body.cost_per_km,
+        "fixed_cost": body.fixed_cost,
+    }
+
+
+@app.get("/vehicles")
+def list_vehicles(current_company: dict = Depends(get_current_company)):
+    company_id = current_company["company_id"]
+    with scoped_session_for_company(company_id) as session:
+        vehicles = session.query(Vehicle).filter_by(company_id=company_id, is_active=True).all()
+        return {
+            "company_slug": current_company["company_slug"],
+            "vehicles": [
+                {
+                    "id": str(v.id),
+                    "name": v.name,
+                    "vehicle_type": v.vehicle_type,
+                    "capacity": float(v.capacity),
+                    "cost_per_km": float(v.cost_per_km) if v.cost_per_km else 0.9,
+                    "fixed_cost": float(v.fixed_cost) if v.fixed_cost else 50.0,
+                }
+                for v in vehicles
+            ],
+        }
+
+
 @app.post("/optimize")
 @limiter.limit("120/minute")
 def optimize(
@@ -159,6 +220,22 @@ def optimize(
     stops = [Stop(id=s.id, lat=s.lat, lon=s.lon, demand=s.demand) for s in body.stops]
     depot = Stop(id="depot", lat=body.depot.lat, lon=body.depot.lon) if body.depot else None
 
+    vehicle_specs = (
+        [
+            VehicleSpec(
+                id=vs.id,
+                name=vs.name,
+                capacity=vs.capacity,
+                cost_per_km=vs.cost_per_km,
+                fixed_cost=vs.fixed_cost,
+                max_distance_km=vs.max_distance_km,
+            )
+            for vs in body.vehicle_specs
+        ]
+        if body.vehicle_specs
+        else None
+    )
+
     cost_kwargs = {}
     if body.cost_per_km is not None:
         cost_kwargs["cost_per_km"] = body.cost_per_km
@@ -173,6 +250,10 @@ def optimize(
             vehicle_capacity=body.vehicle_capacity,
             depot=depot,
             cost_model=cost_model,
+            solver_type=body.solver_type,
+            distance_provider=body.distance_provider,
+            vehicle_specs=vehicle_specs,
+            max_route_distance_km=body.max_route_distance_km,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -219,6 +300,8 @@ def optimize(
             "baseline_distance_km": float(result.baseline_distance_km),
             "baseline_cost": float(result.baseline_cost),
             "cost_reduction_pct": float(result.cost_reduction_pct),
+            "solver_used": result.solver_used,
+            "distance_provider_used": result.distance_provider_used,
         },
         "elapsed_ms": elapsed_ms,
     }

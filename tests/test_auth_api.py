@@ -1,4 +1,4 @@
-"""
+﻿"""
 Test suite for FastAPI endpoints and JWT authentication.
 """
 
@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "api"))
 
 from fastapi.testclient import TestClient
 from main import app
-from routeopt.db.models import Company, OptimizationRun, RouteRecord, Stop
+from routeopt.db.models import Company, OptimizationRun, RouteRecord, Stop, Vehicle
 from routeopt.db.session import admin_session
 
 
@@ -28,6 +28,7 @@ class TestAuthAPI(unittest.TestCase):
             session.query(RouteRecord).delete()
             session.query(OptimizationRun).delete()
             session.query(Stop).delete()
+            session.query(Vehicle).delete()
             session.query(Company).delete()
 
     def test_register_success(self):

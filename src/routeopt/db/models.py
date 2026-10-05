@@ -1,4 +1,4 @@
-"""
+﻿"""
 SQLAlchemy models for RouteOpt's persistent storage.
 """
 
@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     Float,
     Integer,
+    Boolean,
     DateTime,
     ForeignKey,
     JSON,
@@ -31,6 +32,28 @@ class Company(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     stops = relationship("Stop", back_populates="company")
+    vehicles = relationship("Vehicle", back_populates="company")
+
+
+class Vehicle(Base):
+    __tablename__ = "vehicles"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String, nullable=False)
+    vehicle_type = Column(String, default="van")
+    capacity = Column(Float, nullable=False, default=20.0)
+    cost_per_km = Column(Float, default=0.9)
+    fixed_cost = Column(Float, default=50.0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    company = relationship("Company", back_populates="vehicles")
 
 
 class Stop(Base):

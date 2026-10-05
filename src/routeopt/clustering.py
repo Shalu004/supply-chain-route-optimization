@@ -1,11 +1,5 @@
-"""
+﻿"""
 Zone clustering: groups delivery stops into geographically compact zones.
-
-Each zone is later handed to the routing engine as an independent
-Vehicle Routing / TSP sub-problem. Clustering first, then routing,
-is standard practice in logistics optimization -- it keeps each
-sub-problem small enough to solve fast and lets each cluster map
-cleanly to a single vehicle.
 """
 
 from __future__ import annotations
@@ -26,25 +20,21 @@ class Stop:
     demand: float = 1.0  # e.g. package count or weight; used for capacity checks
 
 
+@dataclass
+class VehicleSpec:
+    """Specification of a single vehicle in a heterogeneous fleet."""
+
+    id: str
+    name: str = "Vehicle"
+    capacity: float = 20.0
+    cost_per_km: float = 0.9
+    fixed_cost: float = 50.0
+    max_distance_km: float | None = None
+
+
 def cluster_stops(stops: list[Stop], n_zones: int, random_state: int = 42) -> dict[int, list[Stop]]:
     """
     Group stops into `n_zones` geographically compact clusters using K-Means.
-
-    K-Means on raw lat/lon is a reasonable approximation for city-scale
-    distances. For very large service areas (spanning many degrees of
-    latitude), swap the coordinate space for a projected CRS first --
-    see `to_projected_xy()` below.
-
-    Args:
-        stops: delivery stops to cluster.
-        n_zones: number of zones (typically = number of available vehicles).
-        random_state: for reproducible clustering runs.
-
-    Returns:
-        Mapping of zone_id -> list of Stop objects in that zone.
-
-    Raises:
-        ValueError: if n_zones is larger than the number of stops, or stops is empty.
     """
     if not stops:
         raise ValueError("cluster_stops() received an empty stop list")
@@ -77,11 +67,6 @@ def balance_zones_by_capacity(
     Rebalance clusters that exceed a vehicle's capacity by peeling off the
     stops farthest from the zone centroid and reassigning them to the
     nearest zone with spare capacity.
-
-    This is a greedy heuristic, not an exact solver -- adequate for keeping
-    demos and small-to-mid fleets within capacity. For hard capacity
-    guarantees at scale, this responsibility should move into the VRP
-    solver itself (OR-Tools supports capacity constraints natively).
     """
     zones = {k: list(v) for k, v in zones.items()}  # shallow copy
 
@@ -103,7 +88,6 @@ def balance_zones_by_capacity(
         for zid in list(zones.keys()):
             while zone_demand(zid) > vehicle_capacity and len(zones[zid]) > 1:
                 cy, cx = centroid(zid)
-                # farthest stop from this zone's centroid
                 far_idx = max(
                     range(len(zones[zid])),
                     key=lambda i: (zones[zid][i].lat - cy) ** 2
@@ -111,7 +95,6 @@ def balance_zones_by_capacity(
                 )
                 stop = zones[zid].pop(far_idx)
 
-                # find nearest zone with spare capacity
                 candidates = [
                     z for z in zones if z != zid and zone_demand(z) + stop.demand <= vehicle_capacity
                 ]

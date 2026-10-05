@@ -1,4 +1,4 @@
-"""
+﻿"""
 Database session management with per-request tenant scoping.
 """
 
@@ -27,13 +27,14 @@ def scoped_session_for_company(company_id: str):
     """
     Open a database session scoped to one company.
 
-    PostgreSQL RLS policies will use app.current_company_id
-    to determine which tenant's rows are visible.
+    Switches role to non-superuser `routeopt_app` so PostgreSQL RLS
+    is strictly enforced, using app.current_company_id to determine row visibility.
     """
 
     session = SessionLocal()
 
     try:
+        session.execute(text("SET LOCAL ROLE routeopt_app"))
         session.execute(
             text("SET LOCAL app.current_company_id = :cid"),
             {"cid": company_id},

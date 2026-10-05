@@ -1,4 +1,4 @@
-"""enable row level security
+﻿"""enable row level security
 
 Revision ID: f420930c27fb
 Revises: cbcebad8122b
@@ -20,9 +20,24 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    pass
+    tables = ["stops", "optimization_runs", "routes"]
+    for table in tables:
+        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;")
+        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY;")
+        op.execute(f"DROP POLICY IF EXISTS tenant_isolation_policy ON {table};")
+        op.execute(
+            f"""
+            CREATE POLICY tenant_isolation_policy ON {table}
+            USING (company_id::text = NULLIF(current_setting('app.current_company_id', true), ''))
+            WITH CHECK (company_id::text = NULLIF(current_setting('app.current_company_id', true), ''));
+            """
+        )
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    pass
+    tables = ["stops", "optimization_runs", "routes"]
+    for table in tables:
+        op.execute(f"DROP POLICY IF EXISTS tenant_isolation_policy ON {table};")
+        op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY;")
+        op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY;")

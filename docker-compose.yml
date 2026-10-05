@@ -1,27 +1,38 @@
-version: "3.9"
+﻿services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: routeopt-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: routeopt
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d routeopt"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-services:
   api:
     build:
       context: .
       dockerfile: docker/Dockerfile
+    container_name: routeopt-api
+    restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
-    restart: unless-stopped
+      - DATABASE_URL=postgresql://postgres:devpassword@db:5432/routeopt
+      - JWT_SECRET_KEY=7ee3890cb3003774cf6a85129f841613e1cd9f151872def25677e00fc8b1d5d3
+    depends_on:
+      db:
+        condition: service_healthy
 
-  # --- Add once moving off the in-memory run store ---
-  # db:
-  #   image: postgis/postgis:16-3.4
-  #   environment:
-  #     POSTGRES_DB: routeopt
-  #     POSTGRES_USER: routeopt
-  #     POSTGRES_PASSWORD: change_me
-  #   volumes:
-  #     - pgdata:/var/lib/postgresql/data
-  #   ports:
-  #     - "5432:5432"
-
-# volumes:
-#   pgdata:
+volumes:
+  pgdata:
