@@ -87,3 +87,20 @@ export async function fetchRunHistory(companyId: string, token?: string): Promis
   if (!res.ok) return [];
   return res.json();
 }
+
+export function connectOptimizationSocket(
+  jobId: string,
+  onMessage: (msg: { job_id: string; status: string; progress_pct: number; message: string }) => void
+): WebSocket {
+  const wsUrl = API_BASE.replace(/^http/, 'ws') + '/ws/optimize/' + jobId;
+  const ws = new WebSocket(wsUrl);
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onMessage(data);
+    } catch (e) {
+      console.error('Error parsing WS message:', e);
+    }
+  };
+  return ws;
+}

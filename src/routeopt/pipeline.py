@@ -86,6 +86,7 @@ def run_optimization(
     distance_provider: str = "haversine",
     vehicle_specs: list[VehicleSpec] | None = None,
     max_route_distance_km: float | None = None,
+    use_cache: bool = True,
 ) -> OptimizationResult:
     """
     Full optimization pipeline.
@@ -94,7 +95,7 @@ def run_optimization(
     heterogeneous vehicle fleet specs, max route distance limits, and pluggable distance matrix providers.
     """
     cost_model = cost_model or CostModel()
-    dist_provider_obj = get_distance_provider(distance_provider)
+    dist_provider_obj = get_distance_provider(distance_provider, use_cache=use_cache)
     routes: list[Route] = []
 
     if solver_type not in ("ortools", "heuristic"):

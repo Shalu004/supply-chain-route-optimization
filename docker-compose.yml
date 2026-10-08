@@ -18,6 +18,19 @@
       timeout: 5s
       retries: 5
 
+
+  redis:
+    image: redis:7-alpine
+    container_name: routeopt-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   api:
     build:
       context: .
@@ -29,9 +42,12 @@
     environment:
       - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql://postgres:devpassword@db:5432/routeopt
+      - REDIS_URL=redis://redis:6379/0
       - JWT_SECRET_KEY=7ee3890cb3003774cf6a85129f841613e1cd9f151872def25677e00fc8b1d5d3
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

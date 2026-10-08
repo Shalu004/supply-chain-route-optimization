@@ -6,7 +6,8 @@ import logging
 import time
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException, status
+import asyncio
+from fastapi import Depends, FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError
@@ -23,8 +24,52 @@ from routeopt.db.session import admin_session, scoped_session_for_company
 from routeopt.pipeline import CostModel, run_optimization
 
 limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="RouteOpt API", version="1.0")
 app.state.limiter = limiter
+
+
+class ConnectionManager:
+    """Manages live WebSocket connections for streaming real-time optimization updates."""
+
+    def __init__(self):
+        self.active_connections: dict[str, set[WebSocket]] = {}
+
+    async def connect(self, job_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if job_id not in self.active_connections:
+            self.active_connections[job_id] = set()
+        self.active_connections[job_id].add(websocket)
+
+    def disconnect(self, job_id: str, websocket: WebSocket):
+        if job_id in self.active_connections:
+            self.active_connections[job_id].discard(websocket)
+            if not self.active_connections[job_id]:
+                del self.active_connections[job_id]
+
+    async def broadcast(self, job_id: str, message: dict):
+        if job_id in self.active_connections:
+            for connection in list(self.active_connections[job_id]):
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+    def broadcast_sync(self, job_id: str, message: dict):
+        if job_id and job_id in self.active_connections:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.broadcast(job_id, message))
+            except RuntimeError:
+                try:
+                    asyncio.run(self.broadcast(job_id, message))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+
+manager = ConnectionManager()
 
 @app.exception_handler(RateLimitExceeded)
 def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
@@ -74,6 +119,8 @@ class VehicleSpecIn(BaseModel):
 
 
 class OptimizeRequest(BaseModel):
+    job_id: str | None = Field(None, description="Optional job ID for WebSocket progress tracking")
+    use_cache: bool = Field(True, description="Enable Redis distance matrix caching")
     vehicles: int = Field(..., ge=1)
     vehicle_capacity: float = Field(..., gt=0)
     stops: list[StopIn] = Field(..., min_length=1)
@@ -108,9 +155,30 @@ def get_current_company(token: str = Depends(oauth2_scheme)) -> dict:
 
 # ---------- Routes ----------
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.websocket("/ws/optimize/{job_id}")
+async def websocket_optimize(websocket: WebSocket, job_id: str):
+    await manager.connect(job_id, websocket)
+    try:
+        await websocket.send_json({
+            "job_id": job_id,
+            "status": "CONNECTED",
+            "progress_pct": 0,
+            "message": "Connected to RouteOpt optimization event stream"
+        })
+        while True:
+            # Keep connection alive until client disconnects
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(job_id, websocket)
+    except Exception:
+        manager.disconnect(job_id, websocket)
+
 
 
 @app.post("/register", status_code=201)
@@ -243,6 +311,14 @@ def optimize(
         cost_kwargs["cost_per_vehicle"] = body.cost_per_vehicle
     cost_model = CostModel(**cost_kwargs)
 
+    job_id = body.job_id or request_id
+    manager.broadcast_sync(job_id, {
+        "job_id": job_id,
+        "status": "RUNNING",
+        "progress_pct": 25,
+        "message": "Parsing vehicle fleet specs and computing distance matrix..."
+    })
+
     try:
         result = run_optimization(
             stops=stops,
@@ -254,6 +330,7 @@ def optimize(
             distance_provider=body.distance_provider,
             vehicle_specs=vehicle_specs,
             max_route_distance_km=body.max_route_distance_km,
+            use_cache=body.use_cache,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -284,6 +361,12 @@ def optimize(
                 distance_km=float(r.total_distance_km),
             ))
 
+    manager.broadcast_sync(job_id, {
+        "job_id": job_id,
+        "status": "COMPLETED",
+        "progress_pct": 100,
+        "message": "Optimization completed successfully"
+    })
     elapsed_ms = round((time.monotonic() - start) * 1000, 1)
 
     return {

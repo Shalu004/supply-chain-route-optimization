@@ -22,6 +22,8 @@ export interface OptimizeRequest {
   distance_provider?: 'osrm' | 'haversine';
   vehicles?: VehicleSpecInput[];
   fleet_vehicle_ids?: string[];
+  job_id?: string;
+  use_cache?: boolean;
 }
 
 export interface RouteStep {
@@ -85,4 +87,10 @@ export interface UserSession {
   companyName: string;
   slug: string;
   token: string;
+}
+export interface OptimizationProgress {
+  job_id: string;
+  status: string;
+  progress_pct: number;
+  message: string;
 }
