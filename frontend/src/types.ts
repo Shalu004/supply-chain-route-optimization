@@ -3,6 +3,8 @@ export interface StopInput {
   location: [number, number];
   demand: number;
   time_window?: [number, number];
+  service_duration?: number;
+  pickup_stop_id?: string;
 }
 
 export interface VehicleSpecInput {

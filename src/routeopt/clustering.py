@@ -18,6 +18,9 @@ class Stop:
     lat: float
     lon: float
     demand: float = 1.0  # e.g. package count or weight; used for capacity checks
+    time_window: tuple[float, float] | None = None  # (earliest_min, latest_min) from start horizon
+    service_duration: float = 0.0  # minutes required at the stop
+    pickup_stop_id: str | None = None  # ID of linked pickup stop if this is a delivery
 
 
 @dataclass

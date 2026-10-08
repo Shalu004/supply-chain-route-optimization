@@ -94,6 +94,9 @@ class StopIn(BaseModel):
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
     demand: float = 1.0
+    time_window: list[float] | None = None
+    service_duration: float = 0.0
+    pickup_stop_id: str | None = None
 
 
 class DepotIn(BaseModel):
@@ -285,7 +288,18 @@ def optimize(
             detail=f"vehicles ({body.vehicles}) cannot exceed number of stops ({len(body.stops)})",
         )
 
-    stops = [Stop(id=s.id, lat=s.lat, lon=s.lon, demand=s.demand) for s in body.stops]
+    stops = [
+        Stop(
+            id=s.id,
+            lat=s.lat,
+            lon=s.lon,
+            demand=s.demand,
+            time_window=tuple(s.time_window) if s.time_window and len(s.time_window) == 2 else None,
+            service_duration=s.service_duration,
+            pickup_stop_id=s.pickup_stop_id,
+        )
+        for s in body.stops
+    ]
     depot = Stop(id="depot", lat=body.depot.lat, lon=body.depot.lon) if body.depot else None
 
     vehicle_specs = (

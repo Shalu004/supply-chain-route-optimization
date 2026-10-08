@@ -1,8 +1,9 @@
-﻿"""
-Google OR-Tools solver integration for Vehicle Routing Problem (VRP / CVRP).
+"""
+Google OR-Tools solver integration for Vehicle Routing Problem (VRP / CVRP / VRPTW / PDP).
 
 Provides exact / metaheuristic VRP solving with vehicle capacity constraints,
-heterogeneous fleet capacities, max route distance limits, and native multi-vehicle routing.
+heterogeneous fleet capacities, max route distance limits, time windows (VRPTW),
+pickup & delivery constraints (PDP), and native multi-vehicle routing.
 """
 
 from __future__ import annotations
@@ -29,9 +30,10 @@ def solve_ortools_vrp(
     distance_provider: AbstractDistanceProvider | None = None,
     vehicle_specs: list[VehicleSpec] | None = None,
     max_route_distance_km: float | None = None,
+    average_speed_kmh: float = 30.0,
 ) -> list[Route]:
     """
-    Solve the Capacitated Vehicle Routing Problem (CVRP) using Google OR-Tools.
+    Solve the Vehicle Routing Problem (CVRP / VRPTW / PDP) using Google OR-Tools.
 
     Args:
         stops: list of delivery stops to visit.
@@ -42,9 +44,10 @@ def solve_ortools_vrp(
         distance_provider: distance matrix provider (defaults to Haversine).
         vehicle_specs: optional heterogeneous vehicle specifications list.
         max_route_distance_km: optional maximum route distance constraint per vehicle.
+        average_speed_kmh: assumed average fleet speed in km/h for time window calculations.
 
     Returns:
-        list of Route objects (one per vehicle).
+        list of Route objects (one per active vehicle).
 
     Raises:
         ValueError: if stops is empty, n_vehicles < 1, or OR-Tools cannot find a feasible solution.
@@ -66,6 +69,7 @@ def solve_ortools_vrp(
         depot_index = 0
 
     num_locations = len(all_locations)
+    stop_id_to_node = {s.id: idx for idx, s in enumerate(all_locations)}
     
     # Determine vehicle count and per-vehicle capacity array
     if vehicle_specs:
@@ -127,6 +131,60 @@ def solve_ortools_vrp(
             True,  # start cumul to zero
             "Distance",
         )
+
+    # Time Window (VRPTW) Dimension
+    has_time_windows = any(s.time_window is not None for s in all_locations)
+    has_pdp = any(s.pickup_stop_id is not None for s in all_locations)
+    time_dimension = None
+
+    if has_time_windows or has_pdp:
+        # Convert distance (km) to travel time (minutes) at average speed
+        km_per_min = max(average_speed_kmh / 60.0, 0.1)
+
+        def time_callback(from_index: int, to_index: int) -> int:
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            travel_km = dist_matrix_km[from_node, to_node]
+            travel_min = travel_km / km_per_min
+            service_min = all_locations[from_node].service_duration
+            return int(round((travel_min + service_min) * 10.0))  # scaled by 10 (deciminutes)
+
+        time_callback_index = routing.RegisterTransitCallback(time_callback)
+        # Max horizon 14400 deciminutes = 24 hours
+        MAX_HORIZON = 14400
+        routing.AddDimension(
+            time_callback_index,
+            MAX_HORIZON,  # allow waiting slack at stops
+            MAX_HORIZON,  # max route time horizon
+            False,  # don't force start to zero if vehicle leaves later
+            "Time",
+        )
+        time_dimension = routing.GetDimensionOrDie("Time")
+
+        # Apply Time Window ranges per node
+        for node_idx, loc in enumerate(all_locations):
+            index = manager.NodeToIndex(node_idx)
+            if loc.time_window is not None:
+                start_dm = int(round(loc.time_window[0] * 10.0))
+                end_dm = int(round(loc.time_window[1] * 10.0))
+                time_dimension.CumulVar(index).SetRange(start_dm, end_dm)
+
+    # Pickup & Delivery (PDP) Constraints
+    if has_pdp:
+        for delivery_node, loc in enumerate(all_locations):
+            if loc.pickup_stop_id and loc.pickup_stop_id in stop_id_to_node:
+                pickup_node = stop_id_to_node[loc.pickup_stop_id]
+                pickup_idx = manager.NodeToIndex(pickup_node)
+                delivery_idx = manager.NodeToIndex(delivery_node)
+
+                routing.AddPickupAndDelivery(pickup_idx, delivery_idx)
+                routing.solver().Add(
+                    routing.VehicleVar(pickup_idx) == routing.VehicleVar(delivery_idx)
+                )
+                if time_dimension is not None:
+                    routing.solver().Add(
+                        time_dimension.CumulVar(pickup_idx) <= time_dimension.CumulVar(delivery_idx)
+                    )
 
     # Configure Fixed Vehicle Dispatch Costs if specified
     if vehicle_specs:
