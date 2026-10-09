@@ -11,7 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, status, WebSocket, WebSocke
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -95,8 +95,37 @@ class StopIn(BaseModel):
     lon: float = Field(..., ge=-180, le=180)
     demand: float = 1.0
     time_window: list[float] | None = None
-    service_duration: float = 0.0
+    service_duration: float = Field(0.0, ge=0)
     pickup_stop_id: str | None = None
+    soft_time_window: list[float] | None = None
+    early_penalty_cost: float = Field(0.0, ge=0)
+    late_penalty_cost: float = Field(0.0, ge=0)
+
+    @field_validator("time_window")
+    @classmethod
+    def validate_time_window(cls, v: list[float] | None) -> list[float] | None:
+        if v is not None:
+            if len(v) != 2:
+                raise ValueError("time_window must be a list of exactly 2 numbers: [earliest, latest]")
+            earliest, latest = v[0], v[1]
+            if earliest < 0:
+                raise ValueError(f"time_window earliest time ({earliest}) cannot be negative")
+            if latest < earliest:
+                raise ValueError(f"time_window latest time ({latest}) cannot be earlier than earliest time ({earliest})")
+        return v
+
+    @field_validator("soft_time_window")
+    @classmethod
+    def validate_soft_time_window(cls, v: list[float] | None) -> list[float] | None:
+        if v is not None:
+            if len(v) != 2:
+                raise ValueError("soft_time_window must be a list of exactly 2 numbers: [earliest, latest]")
+            earliest, latest = v[0], v[1]
+            if earliest < 0:
+                raise ValueError(f"soft_time_window earliest time ({earliest}) cannot be negative")
+            if latest < earliest:
+                raise ValueError(f"soft_time_window latest time ({latest}) cannot be earlier than earliest time ({earliest})")
+        return v
 
 
 class DepotIn(BaseModel):
@@ -134,6 +163,7 @@ class OptimizeRequest(BaseModel):
     distance_provider: str = Field("haversine", description="Distance provider: 'haversine' or 'osrm'")
     vehicle_specs: list[VehicleSpecIn] | None = None
     max_route_distance_km: float | None = Field(None, gt=0)
+    average_speed_kmh: float = Field(30.0, gt=0, description="Average fleet travel speed in km/h for travel time calculation")
 
 
 # ---------- Auth dependency ----------
@@ -288,6 +318,21 @@ def optimize(
             detail=f"vehicles ({body.vehicles}) cannot exceed number of stops ({len(body.stops)})",
         )
 
+    # Validate Pickup and Delivery (PDP) pair references
+    stop_ids_set = {s.id for s in body.stops}
+    for s in body.stops:
+        if s.pickup_stop_id:
+            if s.pickup_stop_id == s.id:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid pickup_stop_id for stop '{s.id}': a stop cannot be its own pickup stop",
+                )
+            if s.pickup_stop_id not in stop_ids_set:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid pickup_stop_id '{s.pickup_stop_id}' for stop '{s.id}': referenced pickup stop ID does not exist in request stops",
+                )
+
     stops = [
         Stop(
             id=s.id,
@@ -297,6 +342,9 @@ def optimize(
             time_window=tuple(s.time_window) if s.time_window and len(s.time_window) == 2 else None,
             service_duration=s.service_duration,
             pickup_stop_id=s.pickup_stop_id,
+            soft_time_window=tuple(s.soft_time_window) if s.soft_time_window and len(s.soft_time_window) == 2 else None,
+            early_penalty_cost=s.early_penalty_cost,
+            late_penalty_cost=s.late_penalty_cost,
         )
         for s in body.stops
     ]
@@ -345,6 +393,7 @@ def optimize(
             vehicle_specs=vehicle_specs,
             max_route_distance_km=body.max_route_distance_km,
             use_cache=body.use_cache,
+            average_speed_kmh=body.average_speed_kmh,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

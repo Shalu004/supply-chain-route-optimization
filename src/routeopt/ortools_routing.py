@@ -151,7 +151,7 @@ def solve_ortools_vrp(
 
         time_callback_index = routing.RegisterTransitCallback(time_callback)
         # Max horizon 14400 deciminutes = 24 hours
-        MAX_HORIZON = 14400
+        MAX_HORIZON = 144000
         routing.AddDimension(
             time_callback_index,
             MAX_HORIZON,  # allow waiting slack at stops

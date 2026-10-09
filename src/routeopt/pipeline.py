@@ -87,6 +87,7 @@ def run_optimization(
     vehicle_specs: list[VehicleSpec] | None = None,
     max_route_distance_km: float | None = None,
     use_cache: bool = True,
+    average_speed_kmh: float = 30.0,
 ) -> OptimizationResult:
     """
     Full optimization pipeline.
@@ -108,6 +109,9 @@ def run_optimization(
 
     effective_n_vehicles = len(vehicle_specs) if vehicle_specs else n_vehicles
 
+    has_time_windows = any(s.time_window is not None or s.soft_time_window is not None for s in stops)
+    has_pdp = any(s.pickup_stop_id is not None for s in stops)
+
     if actual_solver == "ortools":
         try:
             from .ortools_routing import solve_ortools_vrp
@@ -120,9 +124,17 @@ def run_optimization(
                 distance_provider=dist_provider_obj,
                 vehicle_specs=vehicle_specs,
                 max_route_distance_km=max_route_distance_km,
+                average_speed_kmh=average_speed_kmh,
             )
             actual_solver = "ortools"
         except Exception as e:
+            if has_time_windows or has_pdp:
+                logger.error(
+                    "OR-Tools solver failed to find a feasible solution under constraints (VRPTW/PDP): %s", e
+                )
+                raise ValueError(
+                    f"Infeasible routing request: OR-Tools could not satisfy specified constraints (time windows or pickup/delivery precedence) with available fleet ({e})"
+                )
             logger.warning(
                 "OR-Tools solver failed or infeasible (%s); falling back to heuristic solver.",
                 e,
