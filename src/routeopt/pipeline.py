@@ -34,6 +34,7 @@ class OptimizationResult:
     baseline_distance_km: float
     baseline_cost: float
     cost_reduction_pct: float
+    total_duration_minutes: float = 0.0
     solver_used: str = "heuristic"
     distance_provider_used: str = "haversine"
 
@@ -86,6 +87,7 @@ def run_optimization(
     distance_provider: str = "haversine",
     vehicle_specs: list[VehicleSpec] | None = None,
     max_route_distance_km: float | None = None,
+    max_route_duration_minutes: float | None = None,
     use_cache: bool = True,
     average_speed_kmh: float = 30.0,
 ) -> OptimizationResult:
@@ -124,6 +126,7 @@ def run_optimization(
                 distance_provider=dist_provider_obj,
                 vehicle_specs=vehicle_specs,
                 max_route_distance_km=max_route_distance_km,
+                max_route_duration_minutes=max_route_duration_minutes,
                 average_speed_kmh=average_speed_kmh,
             )
             actual_solver = "ortools"
@@ -165,6 +168,7 @@ def run_optimization(
         0.0 if baseline_cost == 0 else round((1 - total_cost / baseline_cost) * 100, 2)
     )
 
+    total_duration = sum(r.total_duration_minutes for r in routes)
     return OptimizationResult(
         routes=routes,
         total_distance_km=float(round(total_distance, 3)),
@@ -173,6 +177,7 @@ def run_optimization(
         baseline_distance_km=float(round(baseline_distance, 3)),
         baseline_cost=float(round(baseline_cost, 2)),
         cost_reduction_pct=float(reduction_pct),
+        total_duration_minutes=float(round(total_duration, 2)),
         solver_used=actual_solver,
         distance_provider_used=distance_provider.lower().strip(),
     )

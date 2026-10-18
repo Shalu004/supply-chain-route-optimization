@@ -21,6 +21,9 @@ class Route:
     zone_id: int
     stops: list[Stop]
     total_distance_km: float = 0.0
+    total_duration_minutes: float = 0.0
+    vehicle_id: str | None = None
+    vehicle_name: str | None = None
 
 
 EARTH_RADIUS_KM = 6371.0

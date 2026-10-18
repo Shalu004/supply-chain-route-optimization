@@ -36,6 +36,11 @@ class VehicleSpec:
     cost_per_km: float = 0.9
     fixed_cost: float = 50.0
     max_distance_km: float | None = None
+    max_duration_minutes: float | None = None
+    earliest_start_min: float | None = None
+    latest_finish_min: float | None = None
+    start_depot: Stop | None = None
+    end_depot: Stop | None = None
 
 
 def cluster_stops(stops: list[Stop], n_zones: int, random_state: int = 42) -> dict[int, list[Stop]]:

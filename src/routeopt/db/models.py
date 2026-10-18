@@ -121,3 +121,39 @@ class RouteRecord(Base):
     distance_km = Column(Float, nullable=False)
 
     run = relationship("OptimizationRun", back_populates="routes")
+
+
+class ReoptimizationRecord(Base):
+    __tablename__ = "reoptimization_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id"),
+        nullable=False,
+        index=True,
+    )
+    event_type = Column(String, nullable=False)
+    affected_vehicles = Column(JSON, nullable=False)
+    details = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    company = relationship("Company")
+
+
+class SimulationRecord(Base):
+    __tablename__ = "simulation_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id"),
+        nullable=False,
+        index=True,
+    )
+    scenario_type = Column(String, nullable=False)
+    scenario_name = Column(String, nullable=False)
+    report = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    company = relationship("Company")
